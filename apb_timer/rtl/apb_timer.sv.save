@@ -1,0 +1,245 @@
+mkdir -p ~/edgeai_soc/apb_timer/rtl ~/edgeai_soc/apb_timer/tb ~/edgeai_soc/apb_timer/sim
+cd ~/edgeai_soc/apb_timer
+nano rtl/apb_timer.sv
+module apb_timer #(
+    parameter ADDR_WIDTH = 32,
+    parameter DATA_WIDTH = 32
+)(
+    // System Clock and Reset
+    input  logic                  pclk,
+    input  logic                  presetn,
+
+    // APB3 Bus Interface
+    input  logic                  psel,
+    input  logic                  penable,
+    input  logic                  pwrite,
+    input  logic [ADDR_WIDTH-1:0] paddr,
+    input  logic [DATA_WIDTH-1:0] pwdata,
+    output logic [DATA_WIDTH-1:0] prdata,
+    output logic                  pready,
+
+    // Timer Interrupt Output
+    output logic                  timer_irq
+);
+
+    // Register Offsets (Word-Aligned Decoding)
+    localparam [2:0] ADDR_CTRL     = 3'b000; // 0x00
+    localparam [2:0] ADDR_PRESCALE = 3'b001; // 0x04
+    localparam [2:0] ADDR_RELOAD   = 3'b010; // 0x08
+    localparam [2:0] ADDR_VALUE    = 3'b011; // 0x0C
+    localparam [2:0] ADDR_INTSTAT  = 3'b100; // 0x10
+
+    // Internal Registers and Counters
+    logic [DATA_WIDTH-1:0] reg_ctrl;     
+    logic [DATA_WIDTH-1:0] reg_prescale; 
+    logic [DATA_WIDTH-1:0] reg_reload;   
+    logic [DATA_WIDTH-1:0] reg_value;    
+    logic [DATA_WIDTH-1:0] prescaler_cnt;
+    logic                  reg_intstat;  
+
+    // Control Bit Aliases
+    wire timer_enable = reg_ctrl[0];
+    wire auto_reload  = reg_ctrl[1];
+    wire irq_enable   = reg_ctrl[2];
+
+    // Bus Handshake Helpers
+    wire apb_write = psel && penable && pwrite;
+    wire apb_read  = psel && !pwrite;
+
+    assign pready = 1'b1;
+
+    // Synchronous Sequential Block (Counter & Write Logic)
+    always_ff @(posedge pclk or negedge presetn) begin
+        if (!presetn) begin
+            reg_ctrl      <= '0;
+            reg_prescale  <= '0;
+            reg_reload    <= '0;
+            reg_value     <= '0;
+            prescaler_cnt <= '0;
+            reg_intstat   <= 1'b0;
+        end else begin
+            // 1. APB Register Writes
+            if (apb_write) begin
+                case (paddr[4:2])
+                    ADDR_CTRL: begin
+                        reg_ctrl <= pwdata;
+                        // On timer start, load reload value into counter
+                        if (pwdata[0] && !timer_enable) begin
+                            reg_value     <= reg_reload;
+                            prescaler_cnt <= reg_prescale;
+                        end
+                    end
+                    ADDR_PRESCALE: reg_prescale <= pwdata;
+                    ADDR_RELOAD:   reg_reload   <= pwdata;
+                    ADDR_VALUE:    reg_value    <= pwdata;
+                    ADDR_INTSTAT:  begin
+                        // W1C: Writing 1 to bit 0 clears interrupt status
+                        if (pwdata[0]) reg_intstat <= 1'b0;
+                    end
+                    default: ;
+                endcase
+            end 
+            // 2. Timer Counting Operations
+            else if (timer_enable) begin
+                if (prescaler_cnt == '0) begin
+                    prescaler_cnt <= reg_prescale; // Reset prescaler
+                    
+                    if (reg_value == '0) begin
+                        reg_intstat <= 1'b1; // Underflow interrupt event
+                        
+                        if (auto_reload) begin
+                            reg_value <= reg_reload; // Reload counter
+                        end else begin
+                            reg_ctrl[0] <= 1'b0;    // One-shot: disable timer
+                        end
+                    end else begin
+                        reg_value <= reg_value - 1'b1; // Main countdown
+                    end
+                end else begin
+                    prescaler_cnt <= prescaler_cnt - 1'b1; // Prescaler countdown
+                end
+            end
+        end
+    end
+
+    // Combinational Read Multiplexer
+    always_comb begin
+        prdata = '0;
+        if (apb_read) begin
+            case (paddr[4:2])
+                ADDR_CTRL:     prdata = reg_ctrl;
+                ADDR_PRESCALE: prdata = reg_prescale;
+                ADDR_RELOAD:   prdata = reg_reload;
+                ADDR_VALUE:    prdata = reg_value;
+                ADDR_INTSTAT:  prdata = {{(DATA_WIDTH-1){1'b0}}, reg_intstat};
+                default:       prdata = '0;
+            endcase
+        end
+    end
+
+    // Interrupt Output Generation
+    assign timer_irq = reg_intstat && irq_enable;
+
+endmodule
+
+
+module apb_timer #(
+    parameter ADDR_WIDTH = 32,
+    parameter DATA_WIDTH = 32
+)(
+    // System Clock and Reset
+    input  logic                  pclk,
+    input  logic                  presetn,
+
+    // APB3 Bus Interface
+    input  logic                  psel,
+    input  logic                  penable,
+    input  logic                  pwrite,
+    input  logic [ADDR_WIDTH-1:0] paddr,
+    input  logic [DATA_WIDTH-1:0] pwdata,
+    output logic [DATA_WIDTH-1:0] prdata,
+    output logic                  pready,
+
+    // Timer Interrupt Output
+    output logic                  timer_irq
+);
+
+    // Register Offsets (Word-Aligned Decoding)
+    localparam [2:0] ADDR_CTRL     = 3'b000; // 0x00
+    localparam [2:0] ADDR_PRESCALE = 3'b001; // 0x04
+    localparam [2:0] ADDR_RELOAD   = 3'b010; // 0x08
+    localparam [2:0] ADDR_VALUE    = 3'b011; // 0x0C
+    localparam [2:0] ADDR_INTSTAT  = 3'b100; // 0x10
+
+    // Internal Registers and Counters
+    logic [DATA_WIDTH-1:0] reg_ctrl;     
+    logic [DATA_WIDTH-1:0] reg_prescale; 
+    logic [DATA_WIDTH-1:0] reg_reload;   
+    logic [DATA_WIDTH-1:0] reg_value;    
+    logic [DATA_WIDTH-1:0] prescaler_cnt;
+    logic                  reg_intstat;  
+
+    // Control Bit Aliases
+    wire timer_enable = reg_ctrl[0];
+    wire auto_reload  = reg_ctrl[1];
+    wire irq_enable   = reg_ctrl[2];
+
+    // Bus Handshake Helpers
+    wire apb_write = psel && penable && pwrite;
+    wire apb_read  = psel && !pwrite;
+
+    assign pready = 1'b1;
+
+    // Synchronous Sequential Block (Counter & Write Logic)
+    always_ff @(posedge pclk or negedge presetn) begin
+        if (!presetn) begin
+            reg_ctrl      <= '0;
+            reg_prescale  <= '0;
+            reg_reload    <= '0;
+            reg_value     <= '0;
+            prescaler_cnt <= '0;
+            reg_intstat   <= 1'b0;
+        end else begin
+            // 1. APB Register Writes
+            if (apb_write) begin
+                case (paddr[4:2])
+                    ADDR_CTRL: begin
+                        reg_ctrl <= pwdata;
+                        // On timer start, load reload value into counter
+                        if (pwdata[0] && !timer_enable) begin
+                            reg_value     <= reg_reload;
+                            prescaler_cnt <= reg_prescale;
+                        end
+                    end
+                    ADDR_PRESCALE: reg_prescale <= pwdata;
+                    ADDR_RELOAD:   reg_reload   <= pwdata;
+                    ADDR_VALUE:    reg_value    <= pwdata;
+                    ADDR_INTSTAT:  begin
+                        // W1C: Writing 1 to bit 0 clears interrupt status
+                        if (pwdata[0]) reg_intstat <= 1'b0;
+                    end
+                    default: ;
+                endcase
+            end 
+            // 2. Timer Counting Operations
+            else if (timer_enable) begin
+                if (prescaler_cnt == '0) begin
+                    prescaler_cnt <= reg_prescale; // Reset prescaler
+                    
+                    if (reg_value == '0) begin
+                        reg_intstat <= 1'b1; // Underflow interrupt event
+                        
+                        if (auto_reload) begin
+                            reg_value <= reg_reload; // Reload counter
+                        end else begin
+                            reg_ctrl[0] <= 1'b0;    // One-shot: disable timer
+                        end
+                    end else begin
+                        reg_value <= reg_value - 1'b1; // Main countdown
+                    end
+                end else begin
+                    prescaler_cnt <= prescaler_cnt - 1'b1; // Prescaler countdown
+                end
+            end
+        end
+    end
+
+    // Combinational Read Multiplexer
+    always_comb begin
+        prdata = '0;
+        if (apb_read) begin
+            case (paddr[4:2])
+                ADDR_CTRL:     prdata = reg_ctrl;
+                ADDR_PRESCALE: prdata = reg_prescale;
+                ADDR_RELOAD:   prdata = reg_reload;
+                ADDR_VALUE:    prdata = reg_value;
+                ADDR_INTSTAT:  prdata = {{(DATA_WIDTH-1){1'b0}}, reg_intstat};
+                default:       prdata = '0;
+            endcase
+        end
+    end
+
+    // Interrupt Output Generation
+    assign timer_irq = reg_intstat && irq_enable;
+
+endmodule

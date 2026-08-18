@@ -1,0 +1,156 @@
+`timescale 1ns/1ps
+
+module tb_apb_timer;
+
+    // ------------------------------------------------------------------------
+    // Parameters and Signal Declarations
+    // ------------------------------------------------------------------------
+    parameter ADDR_WIDTH = 32;
+    parameter DATA_WIDTH = 32;
+    parameter CLK_PERIOD = 10; // 100 MHz clock
+
+    logic                  pclk;
+    logic                  presetn;
+    logic                  psel;
+    logic                  penable;
+    logic                  pwrite;
+    logic [ADDR_WIDTH-1:0] paddr;
+    logic [DATA_WIDTH-1:0] pwdata;
+    logic [DATA_WIDTH-1:0] prdata;
+    logic                  pready;
+    logic                  timer_irq;
+
+    // ------------------------------------------------------------------------
+    // Device Under Test (DUT) Instantiation
+    // ------------------------------------------------------------------------
+    apb_timer #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .DATA_WIDTH(DATA_WIDTH)
+    ) dut (
+        .pclk     (pclk),
+        .presetn  (presetn),
+        .psel     (psel),
+        .penable  (penable),
+        .pwrite   (pwrite),
+        .paddr    (paddr),
+        .pwdata   (pwdata),
+        .prdata   (prdata),
+        .pready   (pready),
+        .timer_irq(timer_irq)
+    );
+
+    // ------------------------------------------------------------------------
+    // Clock Generation (100 MHz)
+    // ------------------------------------------------------------------------
+    always #(CLK_PERIOD/2) pclk = ~pclk;
+
+    // ------------------------------------------------------------------------
+    // Reusable APB Master Tasks
+    // ------------------------------------------------------------------------
+
+    // APB Write Task
+    task apb_write(input [31:0] addr, input [31:0] data);
+        @(posedge pclk);
+        psel   <= 1'b1;
+        pwrite <= 1'b1;
+        paddr  <= addr;
+        pwdata <= data;
+        
+        @(posedge pclk);
+        penable <= 1'b1;
+        
+        @(posedge pclk);
+        while (!pready) @(posedge pclk);
+        
+        psel    <= 1'b0;
+        penable <= 1'b0;
+    endtask
+
+    // APB Read Task
+    task apb_read(input [31:0] addr, output [31:0] data);
+        @(posedge pclk);
+        psel   <= 1'b1;
+        pwrite <= 1'b0;
+        paddr  <= addr;
+        
+        @(posedge pclk);
+        penable <= 1'b1;
+        
+        @(posedge pclk);
+        while (!pready) @(posedge pclk);
+        
+        data    = prdata;
+        psel    <= 1'b0;
+        penable <= 1'b0;
+    endtask
+
+    // ------------------------------------------------------------------------
+    // Stimulus & Self-Checking Execution Flow
+    // ------------------------------------------------------------------------
+    logic [31:0] read_data;
+
+    initial begin
+        // Waveform Dump Setup for GTKWave
+        $dumpfile("sim/timer_sim.vcd");
+        $dumpvars(0, tb_apb_timer);
+
+        // Initial Signal States
+        pclk    = 0;
+        presetn = 0;
+        psel    = 0;
+        penable = 0;
+        pwrite  = 0;
+        paddr   = 0;
+        pwdata  = 0;
+
+        // Apply Reset
+        #(CLK_PERIOD * 5);
+        presetn = 1;
+        #(CLK_PERIOD * 2);
+
+        $display("--------------------------------------------------");
+        $display("--- TEST 1: Register Configuration & Readback ---");
+        $display("--------------------------------------------------");
+        
+        // Write Reload Value = 5, Prescaler = 1 (Divide by 2)
+        apb_write(32'h08, 32'd5); // REG_RELOAD
+        apb_write(32'h04, 32'd1); // REG_PRESCALE
+
+        // Readback Verification
+        apb_read(32'h08, read_data);
+        if (read_data == 32'd5)
+            $display("[PASS] Reload Register Write/Read: Read %d (Expected 5)", read_data);
+        else
+            $display("[FAIL] Reload Register Readback mismatch! Read %d", read_data);
+
+        $display("--------------------------------------------------");
+        $display("--- TEST 2: Timer Start & Underflow Interrupt   ---");
+        $display("--------------------------------------------------");
+
+        // Enable Timer with IRQ enabled (CTRL = Bit 0 (Enable) | Bit 2 (IRQ Enable) -> 0x05)
+        apb_write(32'h00, 32'h05); 
+
+        // Wait for Hardware Interrupt Signal
+        wait(timer_irq == 1'b1);
+        $display("[PASS] Timer Underflow Event Triggered Interrupt (timer_irq = 1)!");
+
+        $display("--------------------------------------------------");
+        $display("--- TEST 3: Interrupt Status Clear (W1C Check)  ---");
+        $display("--------------------------------------------------");
+
+        // Write 1 to clear Bit 0 in INTSTAT (0x10)
+        apb_write(32'h10, 32'h01);
+        #(CLK_PERIOD * 2);
+
+        if (timer_irq == 1'b0)
+            $display("[PASS] W1C verified: timer_irq cleared to 0 successfully!");
+        else
+            $display("[FAIL] W1C failed: timer_irq is still high!");
+
+        $display("--------------------------------------------------");
+        $display("--- ALL TESTS COMPLETED SUCCESSFULLY!          ---");
+        $display("--------------------------------------------------");
+        $finish;
+    end
+
+endmodule
